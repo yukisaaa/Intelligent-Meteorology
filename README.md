@@ -1,8 +1,5 @@
 # 天池 CIKM2017 降水预测统一框架
-
-本项目保持原始天池数据文件不变，只在项目目录中生成索引、日志、模型权重和预测文件。
-
-当前接入三个公开实现：
+接入三个公开实现：
 
 - ConvLSTM: `ndrplz/ConvLSTM_pytorch`
 - PredRNN: `thuml/predrnn-pytorch`
