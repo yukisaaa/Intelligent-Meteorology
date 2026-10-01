@@ -1,0 +1,116 @@
+{
+  "train": {
+    "path": "train.txt",
+    "bytes": 17053028501,
+    "rows": 10000,
+    "unique_ids": 10000,
+    "duplicate_ids": [],
+    "finite_labels": 10000,
+    "negative_labels": 0,
+    "zero_labels": 326,
+    "label_min": 0.0,
+    "label_max": 138.39999389648438,
+    "label_mean": 15.54539966583252,
+    "label_std": 15.854988098144531,
+    "label_quantiles": {
+      "q00": 0.0,
+      "q25": 2.4000000953674316,
+      "q50": 8.0,
+      "q75": 25.700000762939453,
+      "q90": 37.0,
+      "q95": 45.29999923706055,
+      "q99": 63.400001525878906,
+      "q100": 138.39999389648438
+    },
+    "radar_sample": {
+      "sampled_rows": 128,
+      "malformed_row_indices": [],
+      "nonfinite_values": 0,
+      "minimum": -1.0,
+      "maximum": 215.0,
+      "mean_of_sample_means": 47.96458270587027,
+      "mean_zero_rate": 0.40879273222804957,
+      "mean_negative_rate": 1.531712577198314e-06
+    }
+  },
+  "test_a": {
+    "path": "testA.txt",
+    "bytes": 3319312678,
+    "rows": 2000,
+    "unique_ids": 2000,
+    "duplicate_ids": [],
+    "finite_labels": 2000,
+    "negative_labels": 2000,
+    "zero_labels": 0,
+    "label_min": -1.0,
+    "label_max": -1.0,
+    "label_mean": -1.0,
+    "label_std": 0.0,
+    "label_quantiles": {
+      "q00": -1.0,
+      "q25": -1.0,
+      "q50": -1.0,
+      "q75": -1.0,
+      "q90": -1.0,
+      "q95": -1.0,
+      "q99": -1.0,
+      "q100": -1.0
+    },
+    "radar_sample": {
+      "sampled_rows": 128,
+      "malformed_row_indices": [],
+      "nonfinite_values": 0,
+      "minimum": -1.0,
+      "maximum": 209.0,
+      "mean_of_sample_means": 41.754229947924614,
+      "mean_zero_rate": 0.41077234309136357,
+      "mean_negative_rate": 5.488636734960624e-07
+    },
+    "unexpected_label_count": 0
+  },
+  "test_b": {
+    "path": "testB.txt",
+    "bytes": 3318557534,
+    "rows": 2000,
+    "unique_ids": 2000,
+    "duplicate_ids": [],
+    "finite_labels": 2000,
+    "negative_labels": 2000,
+    "zero_labels": 0,
+    "label_min": -1.0,
+    "label_max": -1.0,
+    "label_mean": -1.0,
+    "label_std": 0.0,
+    "label_quantiles": {
+      "q00": -1.0,
+      "q25": -1.0,
+      "q50": -1.0,
+      "q75": -1.0,
+      "q90": -1.0,
+      "q95": -1.0,
+      "q99": -1.0,
+      "q100": -1.0
+    },
+    "radar_sample": {
+      "sampled_rows": 128,
+      "malformed_row_indices": [],
+      "nonfinite_values": 0,
+      "minimum": -1.0,
+      "maximum": 206.0,
+      "mean_of_sample_means": 43.04372700303793,
+      "mean_zero_rate": 0.40504249991830865,
+      "mean_negative_rate": 6.765063882625886e-07
+    },
+    "unexpected_label_count": 0
+  },
+  "answer_a": {
+    "path": "answer_sample.csv",
+    "rows": 2000,
+    "finite": true
+  },
+  "answer_b": {
+    "path": "answer_sample.csv",
+    "rows": 2000,
+    "finite": true
+  }
+}
