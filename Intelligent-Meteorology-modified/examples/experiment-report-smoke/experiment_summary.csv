@@ -1,0 +1,4 @@
+name,model,head_variant,loss,seed,best_epoch,mae,rmse,r2,pearson,q90_csi,q90_pod,q90_far,q95_csi,q95_pod,q95_far
+convlstm-full-heavy_rain-s42,convlstm,full,heavy_rain,42,1,2.993159294128418,3.837169885635376,-1.5562279224395752,-1.0000001192092896,0.0,0.0,nan,0.0,0.0,nan
+predrnn-full-heavy_rain-s42,predrnn,full,heavy_rain,42,1,2.843514919281006,3.758190393447876,-1.452082633972168,-1.0,0.0,0.0,nan,0.0,0.0,nan
+earthformer-full-heavy_rain-s42,earthformer,full,heavy_rain,42,1,2.9618616104125977,3.811868906021118,-1.5226294994354248,1.0,0.0,0.0,nan,0.0,0.0,nan

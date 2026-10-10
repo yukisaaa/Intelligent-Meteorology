@@ -1,0 +1,4 @@
+model,head_variant,loss,runs,rmse_mean,rmse_std,mae_mean,mae_std
+convlstm,full,heavy_rain,1,3.837169885635376,0.0,2.993159294128418,0.0
+predrnn,full,heavy_rain,1,3.758190393447876,0.0,2.843514919281006,0.0
+earthformer,full,heavy_rain,1,3.811868906021118,0.0,2.9618616104125977,0.0
