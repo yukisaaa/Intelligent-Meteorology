@@ -15,7 +15,7 @@ import torch
 from tianchi_rainfall.metrics import regression_metrics
 
 
-TODO_PATH = Path("#TODO")
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "experiments" / "ensemble"
 
 
 def read_validation(path: Path):
@@ -47,15 +47,31 @@ def read_thresholds(run_dir: Path) -> dict[str, float]:
     return {name: float(value) for name, value in thresholds.items()}
 
 
+def simplex_weight_vectors(model_count: int, steps: int):
+    """Yield a finite grid of non-negative weights summing to one."""
+    units = [0] * model_count
+
+    def visit(position: int, remaining: int):
+        if position == model_count - 1:
+            units[position] = remaining
+            yield torch.tensor(units, dtype=torch.float32) / steps
+            return
+        for amount in range(remaining + 1):
+            units[position] = amount
+            yield from visit(position + 1, remaining - amount)
+
+    yield from visit(0, steps)
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("run_dirs", nargs=3, type=Path)
-    parser.add_argument("--output-dir", type=Path, default=TODO_PATH)
+    parser.add_argument("run_dirs", nargs="+", type=Path)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--weight-step", type=float, default=0.05)
     args = parser.parse_args()
+    if len(args.run_dirs) < 2:
+        parser.error("at least two model run directories are required")
 
-    if str(args.output_dir) == "#TODO":
-        parser.error("Replace #TODO or provide --output-dir")
     steps = round(1.0 / args.weight_step)
     if steps < 1 or abs(steps * args.weight_step - 1.0) > 1e-6:
         parser.error("weight-step must divide 1.0 exactly, for example 0.1 or 0.05")
@@ -70,16 +86,13 @@ def main():
     best_rmse = float("inf")
     best_weights = None
     best_prediction = None
-    for first in range(steps + 1):
-        for second in range(steps - first + 1):
-            third = steps - first - second
-            weights = torch.tensor([first, second, third], dtype=torch.float32) / steps
-            prediction = prediction_matrix @ weights
-            rmse = float(((prediction - targets) ** 2).mean().sqrt())
-            if rmse < best_rmse:
-                best_rmse = rmse
-                best_weights = weights
-                best_prediction = prediction
+    for weights in simplex_weight_vectors(len(args.run_dirs), steps):
+        prediction = prediction_matrix @ weights
+        rmse = float(((prediction - targets) ** 2).mean().sqrt())
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_weights = weights
+            best_prediction = prediction
 
     assert best_weights is not None and best_prediction is not None
     thresholds = read_thresholds(args.run_dirs[0])

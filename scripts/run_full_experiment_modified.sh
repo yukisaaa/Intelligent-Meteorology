@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-train_file="${TRAIN_FILE:-#TODO}"
-test_a_file="${TEST_A_FILE:-#TODO}"
-test_b_file="${TEST_B_FILE:-#TODO}"
-answer_a="${ANSWER_A:-#TODO}"
-answer_b="${ANSWER_B:-#TODO}"
-vendor_root="${VENDOR_ROOT:-#TODO}"
-output_root="${OUTPUT_ROOT:-#TODO}"
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+data_root="${DATA_ROOT:-/vdb/tianchi/cikm2017/data_new}"
+crop_size="${CROP_SIZE:-41}"
+train_file="${TRAIN_FILE:-${data_root}/CIKM2017_train/train_crop${crop_size}_inputs.npy}"
+test_a_file="${TEST_A_FILE:-${data_root}/CIKM2017_testA/testA_crop${crop_size}_inputs.npy}"
+test_b_file="${TEST_B_FILE:-${data_root}/CIKM2017_testB/testB_crop${crop_size}_inputs.npy}"
+answer_a="${ANSWER_A:-${data_root}/CIKM2017_testA/answer_sample.csv}"
+answer_b="${ANSWER_B:-${data_root}/CIKM2017_testB/answer_sample.csv}"
+vendor_root="${VENDOR_ROOT:-${project_dir}/vendor}"
+output_root="${OUTPUT_ROOT:-${project_dir}/experiments}"
 
 for value in "${train_file}" "${test_a_file}" "${test_b_file}" "${answer_a}" \
-  "${answer_b}" "${vendor_root}" "${output_root}"; do
-  if [[ "${value}" == "#TODO" ]]; then
-    echo "请设置 TRAIN_FILE、TEST_A_FILE、TEST_B_FILE、ANSWER_A、ANSWER_B、VENDOR_ROOT 和 OUTPUT_ROOT" >&2
+  "${answer_b}"; do
+  if [[ ! -f "${value}" ]]; then
+    echo "输入文件不存在：${value}" >&2
     exit 2
   fi
 done
+if [[ ! -d "${vendor_root}" ]]; then
+  echo "第三方模型目录不存在：${vendor_root}；请先运行 scripts/bootstrap_vendor.sh" >&2
+  exit 2
+fi
 
 profile="${1:-core}"
 device="${2:-cuda}"
-crop_size="${CROP_SIZE:-41}"
 run_id="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 output_base_root="${output_root}"
 output_root="${output_base_root}/${run_id}"
 python_bin="${PYTHON_BIN:-python}"
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 index_dir="${output_base_root}/indexes"
 if [[ -e "${output_root}" ]]; then
   echo "输出目录已存在：${output_root}；请设置不同的 RUN_ID" >&2
@@ -72,14 +77,15 @@ train_model() {
 }
 
 train_model convlstm convlstm-full-s42 8 --seed 42 --hidden-dims 16,32
-train_model predrnn predrnn-full-s42 4 --seed 42 --hidden-dims 32,32
-train_model earthformer earthformer-full-s42 1 --seed 42 \
-  --earthformer-base-units 32 --learning-rate 0.0003
+train_model simvp simvp-full-s42 8 --seed 42 --learning-rate 0.0005
+train_model tau tau-full-s42 8 --seed 42 --learning-rate 0.0005
+train_model fourcastlstm fourcastlstm-full-s42 4 --seed 42 --learning-rate 0.0003
 
 run_dirs=(
   "${output_root}/convlstm-full-s42"
-  "${output_root}/predrnn-full-s42"
-  "${output_root}/earthformer-full-s42"
+  "${output_root}/simvp-full-s42"
+  "${output_root}/tau-full-s42"
+  "${output_root}/fourcastlstm-full-s42"
 )
 
 if [[ "${profile}" == "paper" ]]; then
@@ -115,8 +121,9 @@ fi
   --output-dir "${output_root}/reports"
 "${python_bin}" ensemble_modified.py \
   "${output_root}/convlstm-full-s42" \
-  "${output_root}/predrnn-full-s42" \
-  "${output_root}/earthformer-full-s42" \
+  "${output_root}/simvp-full-s42" \
+  "${output_root}/tau-full-s42" \
+  "${output_root}/fourcastlstm-full-s42" \
   --output-dir "${output_root}/ensemble"
 "${python_bin}" validate_submission.py \
   --prediction-file "${output_root}/ensemble/test_predictions.csv" \

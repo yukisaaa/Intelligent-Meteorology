@@ -14,6 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "experiments" / "reports"
+
+
 def read_records(run_dir: Path) -> list[dict]:
     return [
         json.loads(line)
@@ -45,10 +49,8 @@ def safe_name(config: dict, run_dir: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dirs", nargs="+", type=Path)
-    parser.add_argument("--output-dir", type=Path, default=Path("#TODO"))
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
-    if str(args.output_dir) == "#TODO":
-        parser.error("Replace #TODO or provide --output-dir")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     runs = []

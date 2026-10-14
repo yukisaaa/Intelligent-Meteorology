@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -10,23 +11,33 @@ import torch
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-TODO_PATH = Path("#TODO")
+DEFAULT_VENDOR_ROOT = PROJECT_DIR / "vendor"
 
 from tianchi_rainfall.models import build_model
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vendor-root", type=Path, default=TODO_PATH)
-    parser.add_argument("--models", default="convlstm,predrnn,earthformer")
+    parser.add_argument(
+        "--vendor-root",
+        type=Path,
+        default=Path(os.environ.get("VENDOR_ROOT", str(DEFAULT_VENDOR_ROOT))),
+    )
+    parser.add_argument(
+        "--models",
+        default=(
+            "convlstm,predrnn,earthformer,simvp,tau,fourcastlstm,"
+            "cascast,postrainbench"
+        ),
+    )
     parser.add_argument(
         "--head-variants", default="full,no_attention,no_multiscale,avg_only"
     )
     parser.add_argument("--crop-size", type=int, default=9)
     args = parser.parse_args()
 
-    if str(args.vendor_root) == "#TODO":
-        parser.error("Replace #TODO or provide --vendor-root")
+    if not args.vendor_root.is_dir():
+        parser.error(f"Vendor directory does not exist: {args.vendor_root}")
 
     inputs = torch.rand(1, 15, 4, args.crop_size, args.crop_size)
     for name in args.models.split(","):

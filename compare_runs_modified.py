@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUTPUT_FILE = PROJECT_DIR / "experiments" / "reports" / "model_comparison.csv"
+
+
 def best_record(run_dir: Path) -> dict:
     path = run_dir / "metrics.jsonl"
     records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
@@ -18,11 +22,8 @@ def best_record(run_dir: Path) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dirs", nargs="+", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("#TODO"))
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_FILE)
     args = parser.parse_args()
-
-    if str(args.output) == "#TODO":
-        parser.error("Replace #TODO or provide --output")
 
     rows = []
     for run_dir in args.run_dirs:

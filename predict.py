@@ -2,17 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import math
+import os
 import sys
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-TODO_PATH = Path("#TODO")
-
-
-def is_todo(path: Path | None) -> bool:
-    return path is None or str(path) == "#TODO"
+DATA_ROOT = Path("/vdb/tianchi/cikm2017/data_new")
+DEFAULT_CROP_SIZE = 41
+DEFAULT_VENDOR_ROOT = PROJECT_DIR / "vendor"
+DEFAULT_OUTPUT_FILE = PROJECT_DIR / "experiments" / "predictions" / "test_predictions.txt"
 
 import torch
 from torch.utils.data import DataLoader
@@ -33,15 +34,19 @@ def choose_device(name: str) -> torch.device:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, default=TODO_PATH)
+    parser.add_argument("--checkpoint", type=Path, required=True, help="Trained checkpoint (.pt) path")
     parser.add_argument(
         "--data-file",
         type=Path,
-        default=TODO_PATH,
-        help="Replace #TODO or pass this argument",
+        default=DATA_ROOT / "CIKM2017_testB" / f"testB_crop{DEFAULT_CROP_SIZE}_inputs.npy",
+        help="Test *_inputs.npy path; matching targets and ids files are required beside it",
     )
-    parser.add_argument("--output-file", type=Path, default=TODO_PATH)
-    parser.add_argument("--vendor-root", type=Path, default=TODO_PATH)
+    parser.add_argument("--output-file", type=Path, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument(
+        "--vendor-root",
+        type=Path,
+        default=Path(os.environ.get("VENDOR_ROOT", str(DEFAULT_VENDOR_ROOT))),
+    )
     parser.add_argument("--index-dir", type=Path, default=PROJECT_DIR / "cache" / "indexes")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -49,9 +54,6 @@ def main():
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
 
-    for name in ("checkpoint", "data_file", "output_file", "vendor_root"):
-        if is_todo(getattr(args, name)):
-            parser.error(f"Replace #TODO or provide --{name.replace('_', '-')}")
     device = choose_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     model = build_model(
@@ -82,7 +84,12 @@ def main():
         for batch in loader:
             predictions = model(batch["inputs"].to(device)).cpu().numpy()
             for prediction in predictions:
-                handle.write(f"{max(0.0, float(prediction)):.6f}\n")
+                value = float(prediction)
+                if not math.isfinite(value):
+                    raise FloatingPointError(
+                        "Model produced NaN/Inf during prediction; refusing to write an invalid file"
+                    )
+                handle.write(f"{max(0.0, value):.6f}\n")
     print(f"Wrote {len(dataset)} predictions to {args.output_file}")
 
 

@@ -4,24 +4,37 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
+import os
 import random
 import sys
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-TODO_PATH = Path("#TODO")
+DATA_ROOT = Path("/vdb/tianchi/cikm2017/data_new")
+DEFAULT_CROP_SIZE = 41
+DEFAULT_VENDOR_ROOT = PROJECT_DIR / "vendor"
+DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "experiments"
+DEFAULT_INDEX_ROOT = PROJECT_DIR / "cache" / "indexes"
 
 
-def is_todo(path: Path | None) -> bool:
-    return path is None or str(path) == "#TODO"
+def env_path(name: str, default: Path) -> Path:
+    return Path(os.environ.get(name, str(default)))
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from tianchi_rainfall.data import CIKM2017Dataset, load_ids_labels, load_labels, load_offsets
+from tianchi_rainfall.data import (
+    CIKM2017Dataset,
+    load_ids_labels,
+    load_labels,
+    load_offsets,
+    npy_bundle_paths,
+)
 from tianchi_rainfall.losses_modified import build_loss
 from tianchi_rainfall.metrics import regression_metrics
 from tianchi_rainfall.models import build_model
@@ -49,23 +62,33 @@ def run_epoch(model, loader, device, loss_fn, thresholds, optimizer=None, scaler
     for batch in loader:
         inputs = batch["inputs"].to(device)
         target = batch["target"].to(device)
+        if not torch.isfinite(inputs).all() or not torch.isfinite(target).all():
+            raise FloatingPointError("Input or target contains NaN/Inf")
         with torch.set_grad_enabled(training), torch.autocast(
             device_type=device.type,
             dtype=torch.float16,
             enabled=device.type == "cuda" and scaler is not None,
         ):
             prediction = model(inputs)
+            if not torch.isfinite(prediction).all():
+                raise FloatingPointError("Model prediction contains NaN/Inf")
             loss = loss_fn(prediction, target)
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Loss contains NaN/Inf")
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 if scaler is None:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), 1.0, error_if_nonfinite=True
+                    )
                     optimizer.step()
                 else:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), 1.0, error_if_nonfinite=True
+                    )
                     scaler.step(optimizer)
                     scaler.update()
         batch_size = target.shape[0]
@@ -127,31 +150,74 @@ def predict(model, data_path, output_path, args, device):
         for batch in loader:
             values = model(batch["inputs"].to(device)).cpu().numpy()
             for value in values:
-                handle.write(f"{max(0.0, float(value)):.6f}\n")
+                value = float(value)
+                if not math.isfinite(value):
+                    raise FloatingPointError(
+                        "Model produced NaN/Inf during prediction; refusing to write an invalid file"
+                    )
+                handle.write(f"{max(0.0, value):.6f}\n")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["convlstm", "predrnn", "earthformer"], required=True)
+    parser.add_argument(
+        "--model",
+        choices=[
+            "convlstm",
+            "predrnn",
+            "earthformer",
+            "simvp",
+            "tau",
+            "fourcastlstm",
+            "cascast",
+            "postrainbench",
+        ],
+        required=True,
+    )
     parser.add_argument(
         "--train-file",
         type=Path,
-        default=TODO_PATH,
-        help="Training file path; replace #TODO or pass this argument",
+        default=env_path(
+            "TRAIN_FILE",
+            DATA_ROOT / "CIKM2017_train" / f"train_crop{DEFAULT_CROP_SIZE}_inputs.npy",
+        ),
+        help="Training *_inputs.npy path; matching targets and ids files are required beside it",
     )
     parser.add_argument(
         "--test-file",
         type=Path,
-        default=TODO_PATH,
-        help="Optional test file path; replace #TODO or pass this argument",
+        default=env_path(
+            "TEST_B_FILE",
+            DATA_ROOT / "CIKM2017_testB" / f"testB_crop{DEFAULT_CROP_SIZE}_inputs.npy",
+        ),
+        help="TestB *_inputs.npy path",
     )
     parser.add_argument(
-        "--test-a-file", type=Path, default=TODO_PATH,
-        help="Optional TestA file; predictions are written separately",
+        "--test-a-file",
+        type=Path,
+        default=env_path(
+            "TEST_A_FILE",
+            DATA_ROOT / "CIKM2017_testA" / f"testA_crop{DEFAULT_CROP_SIZE}_inputs.npy",
+        ),
+        help="TestA *_inputs.npy path; predictions are written separately",
     )
-    parser.add_argument("--vendor-root", type=Path, default=TODO_PATH)
-    parser.add_argument("--output-dir", type=Path, default=TODO_PATH)
-    parser.add_argument("--index-dir", type=Path, default=PROJECT_DIR / "cache" / "indexes")
+    parser.add_argument(
+        "--vendor-root",
+        type=Path,
+        default=env_path("VENDOR_ROOT", DEFAULT_VENDOR_ROOT),
+        help="Directory containing the pinned third-party model repositories",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Output directory; defaults to experiments/<model>-<timestamp>",
+    )
+    parser.add_argument(
+        "--index-dir",
+        type=Path,
+        default=env_path("INDEX_DIR", DEFAULT_INDEX_ROOT),
+    )
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--crop-size", type=int, default=41)
@@ -193,16 +259,23 @@ def main():
     parser.add_argument("--skip-test-prediction", action="store_true")
     args = parser.parse_args()
 
-    if is_todo(args.train_file):
-        parser.error("Replace #TODO or provide --train-file")
-    if is_todo(args.vendor_root):
-        parser.error("Replace #TODO or provide --vendor-root")
-    if is_todo(args.output_dir):
-        parser.error("Replace #TODO or provide --output-dir")
-    if is_todo(args.test_file):
-        args.test_file = None
-    if is_todo(args.test_a_file):
-        args.test_a_file = None
+    if args.output_dir is None:
+        output_root = env_path("OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        args.output_dir = output_root / f"{args.model}-{timestamp}"
+    for name in ("train_file", "test_file", "test_a_file"):
+        path = getattr(args, name)
+        if path is None:
+            continue
+        try:
+            npy_bundle_paths(path)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(str(exc))
+    if not args.vendor_root.is_dir():
+        parser.error(
+            f"Vendor directory does not exist: {args.vendor_root}; "
+            "run scripts/bootstrap_vendor.sh first or provide --vendor-root"
+        )
     if not 0 < args.val_ratio < 1 or not 0 < args.holdout_ratio < 1:
         raise ValueError("val-ratio and holdout-ratio must be between 0 and 1")
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
@@ -219,6 +292,9 @@ def main():
         raise ValueError("At least two training samples are required")
     all_indices = np.arange(sample_count, dtype=np.int64)
     all_labels = load_labels(args.train_file, offsets, all_indices)
+    if not np.isfinite(all_labels).all():
+        bad_rows = np.flatnonzero(~np.isfinite(all_labels))[:10].tolist()
+        raise ValueError(f"Training targets contain NaN/Inf at rows {bad_rows}")
     if args.split_strategy == "stratified":
         development_indices, holdout_indices = stratified_regression_split(
             all_labels, args.holdout_ratio, args.split_seed, args.split_bins
@@ -332,7 +408,14 @@ def main():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=3, min_lr=1e-6
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=True) if args.amp and device.type == "cuda" else None
+    # CasCast's upstream attention/LayerNorm stack is kept in FP32 by its
+    # adapter. Do not create a CUDA scaler for it, otherwise the surrounding
+    # autocast context can still destabilize the third-party backbone.
+    scaler = (
+        torch.cuda.amp.GradScaler(enabled=True)
+        if args.amp and device.type == "cuda" and args.model != "cascast"
+        else None
+    )
     best_rmse = float("inf")
     stale_epochs = 0
     metrics_path = args.output_dir / "metrics.jsonl"
