@@ -5,7 +5,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -15,14 +14,13 @@ import numpy as np
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from tianchi_rainfall.data import load_ids_labels, load_offsets, npy_bundle_paths
+from tianchi_rainfall.data import load_ids_labels, load_offsets, parse_row, load_npy_bundle
 
-DATA_ROOT = Path("/vdb/tianchi/cikm2017/data_new")
-DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "experiments"
+TODO_PATH = Path("#TODO")
 
 
-def is_missing(path: Path | None) -> bool:
-    return path is None
+def is_todo(path: Path | None) -> bool:
+    return path is None or str(path) == "#TODO"
 
 
 def answer_profile(path: Path | None) -> dict | None:
@@ -40,20 +38,44 @@ def answer_profile(path: Path | None) -> dict | None:
 
 
 def radar_profile(path: Path, offsets: np.ndarray, count: int) -> dict:
-    inputs_path, _, _ = npy_bundle_paths(path)
-    inputs = np.load(inputs_path, mmap_mode="r", allow_pickle=False)
     indices = np.unique(np.linspace(0, len(offsets) - 1, min(count, len(offsets)), dtype=int))
-    sampled = np.asarray(inputs[indices], dtype=np.float32)
-    finite = np.isfinite(sampled)
-    minima = [float(np.nanmin(row)) for row in sampled]
-    maxima = [float(np.nanmax(row)) for row in sampled]
-    means = [float(np.nanmean(row)) for row in sampled]
-    zero_rates = [float(np.mean(row == 0)) for row in sampled]
-    negative_rates = [float(np.mean(row < 0)) for row in sampled]
+    if path.suffix.lower() == ".npy":
+        inputs, _, _ = load_npy_bundle(path)
+        radar = np.array(inputs[indices])
+        return {
+            "sampled_rows": len(indices), "malformed_row_indices": [],
+            "nonfinite_values": int(radar.size - np.isfinite(radar).sum()),
+            "minimum": float(np.nanmin(radar)), "maximum": float(np.nanmax(radar)),
+            "mean_of_sample_means": float(np.nanmean(radar)),
+            "mean_zero_rate": float(np.mean(radar == 0)),
+            "mean_negative_rate": float(np.mean(radar < 0)),
+            "units": "normalized_by_255; raw sentinels already sanitized by converter",
+        }
+    minima: list[float] = []
+    maxima: list[float] = []
+    means: list[float] = []
+    zero_rates: list[float] = []
+    negative_rates: list[float] = []
+    malformed: list[int] = []
+    nonfinite = 0
+    with path.open("rb") as handle:
+        for index in indices:
+            handle.seek(int(offsets[index]))
+            try:
+                _, _, radar = parse_row(handle.readline())
+            except Exception:
+                malformed.append(int(index))
+                continue
+            nonfinite += int(radar.size - np.isfinite(radar).sum())
+            minima.append(float(np.nanmin(radar)))
+            maxima.append(float(np.nanmax(radar)))
+            means.append(float(np.nanmean(radar)))
+            zero_rates.append(float(np.mean(radar == 0)))
+            negative_rates.append(float(np.mean(radar < 0)))
     return {
         "sampled_rows": int(len(indices)),
-        "malformed_row_indices": [],
-        "nonfinite_values": int((~finite).sum()),
+        "malformed_row_indices": malformed,
+        "nonfinite_values": nonfinite,
         "minimum": min(minima) if minima else None,
         "maximum": max(maxima) if maxima else None,
         "mean_of_sample_means": float(np.mean(means)) if means else None,
@@ -103,7 +125,7 @@ def write_markdown(path: Path, report: dict) -> None:
     lines = [
         "# CIKM2017 数据质量审计",
         "",
-        "本审计只读取 NPY 数据，不修改任何输入文件。雷达值检查采用等距抽样；ID和标签检查覆盖全部样本。",
+        "本审计只读取原始数据，不修改任何数据文件。雷达值检查采用等距抽样；ID和标签检查覆盖全部样本。",
         "",
         "| 数据集 | 样本数 | 文件大小 | ID重复 | 标签范围 | 非有限标签 | 雷达负值率 | 雷达解析异常 |",
         "|---|---:|---:|---:|---|---:|---:|---:|",
@@ -138,7 +160,7 @@ def write_markdown(path: Path, report: dict) -> None:
                 "- 数据没有日期、站点或天气过程字段，无法严格按暴雨过程分组；默认采用固定种子的标签分位数分层划分，并保存逐行划分清单。",
                 "- Test A/B 标签为 -1 时仅可用于预测，不可用于本地精度评估。",
                 "- 雷达负值按缺测哨兵处理；数据加载器只在内存中将其置零，不改写原文件。",
-                "- NPY 输入保持只读；报告和模型输出写入项目输出目录。",
+                "- 原始文件保持只读；索引、报告和模型输出写入项目输出目录。",
             ]
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -146,49 +168,29 @@ def write_markdown(path: Path, report: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--train-file",
-        type=Path,
-        default=DATA_ROOT / "CIKM2017_train" / "train_crop41_inputs.npy",
-    )
-    parser.add_argument(
-        "--test-a-file",
-        type=Path,
-        default=DATA_ROOT / "CIKM2017_testA" / "testA_crop41_inputs.npy",
-    )
-    parser.add_argument(
-        "--test-b-file",
-        type=Path,
-        default=DATA_ROOT / "CIKM2017_testB" / "testB_crop41_inputs.npy",
-    )
-    parser.add_argument("--answer-a", type=Path, default=DATA_ROOT / "CIKM2017_testA" / "answer_sample.csv")
-    parser.add_argument("--answer-b", type=Path, default=DATA_ROOT / "CIKM2017_testB" / "answer_sample.csv")
+    parser.add_argument("--train-file", type=Path, default=TODO_PATH)
+    parser.add_argument("--test-a-file", type=Path, default=TODO_PATH)
+    parser.add_argument("--test-b-file", type=Path, default=TODO_PATH)
+    parser.add_argument("--answer-a", type=Path, default=TODO_PATH)
+    parser.add_argument("--answer-b", type=Path, default=TODO_PATH)
     parser.add_argument("--index-dir", type=Path, default=PROJECT_DIR / "cache" / "indexes")
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path(os.environ.get("OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT))) / "data-audit",
-    )
+    parser.add_argument("--output-dir", type=Path, default=TODO_PATH)
     parser.add_argument("--radar-samples", type=int, default=32)
     args = parser.parse_args()
-    for name in ("train_file", "test_a_file", "test_b_file"):
-        path = getattr(args, name)
-        try:
-            npy_bundle_paths(path)
-        except (FileNotFoundError, ValueError) as exc:
-            parser.error(str(exc))
+    if is_todo(args.train_file) or is_todo(args.output_dir):
+        parser.error("Provide --train-file and --output-dir")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.index_dir.mkdir(parents=True, exist_ok=True)
     report = {
         "train": dataset_profile(args.train_file, args.index_dir, args.radar_samples, None),
         "test_a": None
-        if is_missing(args.test_a_file)
+        if is_todo(args.test_a_file)
         else dataset_profile(args.test_a_file, args.index_dir, args.radar_samples, -1.0),
         "test_b": None
-        if is_missing(args.test_b_file)
+        if is_todo(args.test_b_file)
         else dataset_profile(args.test_b_file, args.index_dir, args.radar_samples, -1.0),
-        "answer_a": None if is_missing(args.answer_a) else answer_profile(args.answer_a),
-        "answer_b": None if is_missing(args.answer_b) else answer_profile(args.answer_b),
+        "answer_a": None if is_todo(args.answer_a) else answer_profile(args.answer_a),
+        "answer_b": None if is_todo(args.answer_b) else answer_profile(args.answer_b),
     }
     (args.output_dir / "data_audit.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

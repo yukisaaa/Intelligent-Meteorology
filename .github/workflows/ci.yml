@@ -18,6 +18,6 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Validate shell scripts
-        run: bash -n scripts/bootstrap_vendor.sh scripts/train_server.sh scripts/run_full_experiment.sh scripts/train_server_modified.sh scripts/run_full_experiment_modified.sh
+        run: for script in scripts/*.sh; do bash -n "$script"; done
       - name: Run core unit tests
         run: python -m unittest discover -s tests -v

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -19,10 +18,7 @@ from tianchi_rainfall.data import CIKM2017Dataset
 from tianchi_rainfall.models import build_model
 
 
-DATA_ROOT = Path("/vdb/tianchi/cikm2017/data_new")
-DEFAULT_CROP_SIZE = 41
-DEFAULT_VENDOR_ROOT = PROJECT_DIR / "vendor"
-DEFAULT_OUTPUT_FILE = PROJECT_DIR / "experiments" / "predictions" / "attention.png"
+TODO_PATH = Path("#TODO")
 
 
 def choose_device(name: str) -> torch.device:
@@ -33,23 +29,18 @@ def choose_device(name: str) -> torch.device:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Trained checkpoint (.pt) path")
-    parser.add_argument(
-        "--data-file",
-        type=Path,
-        default=DATA_ROOT / "CIKM2017_testB" / f"testB_crop{DEFAULT_CROP_SIZE}_inputs.npy",
-        help="Test *_inputs.npy path; matching targets and ids files are required beside it",
-    )
-    parser.add_argument(
-        "--vendor-root",
-        type=Path,
-        default=Path(os.environ.get("VENDOR_ROOT", str(DEFAULT_VENDOR_ROOT))),
-    )
-    parser.add_argument("--output-file", type=Path, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument("--checkpoint", type=Path, default=TODO_PATH)
+    parser.add_argument("--data-file", type=Path, default=TODO_PATH)
+    parser.add_argument("--vendor-root", type=Path, default=PROJECT_DIR / "vendor")
+    parser.add_argument("--output-file", type=Path, default=TODO_PATH)
     parser.add_argument("--index-dir", type=Path, default=PROJECT_DIR / "cache" / "indexes")
     parser.add_argument("--sample-index", type=int, default=0)
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
+
+    for name in ("checkpoint", "data_file", "vendor_root", "output_file"):
+        if str(getattr(args, name)) == "#TODO":
+            parser.error(f"Replace #TODO or provide --{name.replace('_', '-')}")
 
     device = choose_device(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)

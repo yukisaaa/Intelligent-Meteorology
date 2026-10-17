@@ -10,23 +10,15 @@ fetch_pinned_repository() {
   local destination="$2"
   local commit="$3"
 
-  mkdir -p "${destination}"
   if [[ ! -d "${destination}/.git" ]]; then
+    mkdir -p "${destination}"
     git -C "${destination}" init
-  fi
-  if ! git -C "${destination}" remote get-url origin >/dev/null 2>&1; then
     git -C "${destination}" remote add origin "${repository_url}"
+    git -C "${destination}" fetch --depth 1 origin "${commit}"
+    git -C "${destination}" checkout --detach FETCH_HEAD
   fi
 
   local actual_commit
-  actual_commit="$(git -C "${destination}" rev-parse HEAD 2>/dev/null || true)"
-  if [[ "${actual_commit}" != "${commit}" ]]; then
-    git -C "${destination}" fetch --depth 1 origin "${commit}"
-    # These directories are pinned third-party vendor trees.  Force checkout
-    # is intentional here so an unpacked source tree can be made reproducible.
-    git -C "${destination}" checkout --detach -f FETCH_HEAD
-  fi
-
   actual_commit="$(git -C "${destination}" rev-parse HEAD)"
   if [[ "${actual_commit}" != "${commit}" ]]; then
     echo "第三方仓库版本不匹配：${destination}" >&2
@@ -51,35 +43,7 @@ fetch_pinned_repository \
   "${vendor_dir}/earth-forecasting-transformer" \
   "7732b03bdb366110563516c3502315deab4c2026"
 
-external_vendor_dir="${vendor_dir}/external_models"
-mkdir -p "${external_vendor_dir}"
-
-fetch_pinned_repository \
-  "https://github.com/xcw68/Fourier-NowCasting-LSTM.git" \
-  "${external_vendor_dir}/Fourier-NowCasting-LSTM" \
-  "f36d643190c95f2d9a0fdd8475bea0f82982ebfe"
-
 fetch_pinned_repository \
   "https://github.com/chengtan9907/OpenSTL.git" \
-  "${external_vendor_dir}/OpenSTL" \
+  "${vendor_dir}/external_models/SimVP" \
   "eecf8a3078f0a178dbc7b28723da20f94ce36985"
-
-fetch_pinned_repository \
-  "https://github.com/yyyujintang/PostRainBench.git" \
-  "${external_vendor_dir}/PostRainBench" \
-  "ecc19249d998dd00fb0cb621aa1c28a1fc43db24"
-
-fetch_pinned_repository \
-  "https://github.com/Cmeo97/BlockGPT.git" \
-  "${external_vendor_dir}/BlockGPT" \
-  "9866759645f83b2bbc48c1335b41794fa608d429"
-
-fetch_pinned_repository \
-  "https://github.com/OpenEarthLab/CasCast.git" \
-  "${external_vendor_dir}/CasCast" \
-  "487a68b5ade9aa829fe7df2e8f6746b4d9acc233"
-
-fetch_pinned_repository \
-  "https://github.com/luochuyao/PFST-LSTM.git" \
-  "${external_vendor_dir}/PFST-LSTM" \
-  "585ebeec9e167abd31efd1e97362b08bdf324de6"

@@ -4,9 +4,9 @@
 
 | 文献中的问题或方向 | 本项目实现 | 代码位置 |
 |---|---|---|
-| 普通 MSE/MAE 容易平滑强回波并低估极端降水 | 用训练集 q90/q95 提高强降水样本权重，并加入欠预测惩罚 | `src/tianchi_rainfall/losses_modified.py` |
+| 普通 MSE/MAE 容易平滑强回波并低估极端降水 | 用训练集 q90/q95 提高强降水样本权重，并加入欠预测惩罚 | `src/tianchi_rainfall/losses.py` |
 | 局部强回波需要多尺度、空间注意力特征 | `1×3`、`3×1`、`3×3` 分支，加平均池化、最大池化、注意力池化 | `src/tianchi_rainfall/models.py` |
-| 单一模型在不同天气过程中的误差不同 | 在共同验证集搜索非负、和为 1 的三模型权重 | `ensemble_modified.py` |
+| 单一模型在不同天气过程中的误差不同 | 在共同验证集搜索非负、和为 1 的多模型权重，支持四模型融合 | `ensemble.py` |
 | 只用全局 MAE/RMSE 会掩盖强降水表现 | 在训练集 q50/q75/q90/q95 阈值下报告 CSI、POD、FAR、强降水 MAE、欠预测率 | `src/tianchi_rainfall/metrics.py` |
 
 ## 适配边界

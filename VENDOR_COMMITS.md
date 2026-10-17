@@ -10,3 +10,5 @@
 
 服务器复现实验时建议检出这些提交，避免仓库后续更新导致接口变化。
 
+
+SimVP/OpenSTL: `chengtan9907/OpenSTL`, commit `eecf8a3078f0a178dbc7b28723da20f94ce36985`，位于 `vendor/external_models/SimVP`。

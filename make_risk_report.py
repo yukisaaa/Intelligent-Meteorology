@@ -7,10 +7,6 @@ import json
 from pathlib import Path
 
 
-PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_FILE = PROJECT_DIR / "experiments" / "ensemble" / "risk_report.csv"
-
-
 def classify(value: float, thresholds: dict[str, float]) -> str:
     if value >= thresholds["q95"]:
         return "very_high"
@@ -25,10 +21,13 @@ def classify(value: float, thresholds: dict[str, float]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prediction-file", type=Path, required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output-file", type=Path, default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument("--prediction-file", type=Path, default=Path("#TODO"))
+    parser.add_argument("--config", type=Path, default=Path("#TODO"))
+    parser.add_argument("--output-file", type=Path, default=Path("#TODO"))
     args = parser.parse_args()
+    for name in ("prediction_file", "config", "output_file"):
+        if str(getattr(args, name)) == "#TODO":
+            parser.error(f"Provide --{name.replace('_', '-')}")
     config = json.loads(args.config.read_text(encoding="utf-8"))
     thresholds = {key: float(value) for key, value in config["rainfall_thresholds"].items()}
     values = [

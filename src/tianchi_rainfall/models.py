@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import math
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -62,7 +61,8 @@ class MultiScaleAttentionRegressionHead(nn.Module):
         )
 
     def forward(
-        self, features: torch.Tensor, return_attention: bool = False
+        self, features: torch.Tensor, return_attention: bool = False,
+        spatial_mask: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if self.use_multiscale:
             multiscale = features + (
@@ -71,12 +71,28 @@ class MultiScaleAttentionRegressionHead(nn.Module):
         else:
             multiscale = features
         multiscale = self.mix(multiscale)
-        average = F.adaptive_avg_pool2d(multiscale, 1).flatten(1)
+        if spatial_mask is None:
+            average = F.adaptive_avg_pool2d(multiscale, 1).flatten(1)
+        else:
+            spatial_mask = spatial_mask.to(multiscale)
+            if (spatial_mask.ndim != 4 or spatial_mask.shape[1] != 1
+                    or spatial_mask.shape[0] not in (1, features.shape[0])
+                    or spatial_mask.shape[-2:] != features.shape[-2:]):
+                raise ValueError("spatial_mask must have shape [1 or B, 1, H, W]")
+            if (not torch.isfinite(spatial_mask).all() or (spatial_mask < 0).any()
+                    or (spatial_mask > 1).any() or (spatial_mask.sum((-2, -1)) <= 0).any()):
+                raise ValueError("spatial_mask must be finite, in [0, 1], and nonempty")
+            average = (multiscale * spatial_mask).sum((-2, -1)) / spatial_mask.sum((-2, -1))
         pooled = [average]
         if self.use_maximum:
-            pooled.append(F.adaptive_max_pool2d(multiscale, 1).flatten(1))
+            maximum_features = multiscale if spatial_mask is None else multiscale.masked_fill(spatial_mask == 0, -torch.inf)
+            pooled.append(F.adaptive_max_pool2d(maximum_features, 1).flatten(1))
         if self.use_attention:
             logits = self.attention_logits(multiscale).flatten(2)
+            if spatial_mask is not None:
+                log_mask = spatial_mask.clamp_min(torch.finfo(logits.dtype).tiny).log()
+                log_mask = log_mask.masked_fill(spatial_mask == 0, -torch.inf)
+                logits = logits + log_mask.flatten(2)
             attention = torch.softmax(logits, dim=-1).view(
                 features.shape[0], 1, features.shape[-2], features.shape[-1]
             )
@@ -88,6 +104,8 @@ class MultiScaleAttentionRegressionHead(nn.Module):
                 dtype=features.dtype,
                 device=features.device,
             )
+            if spatial_mask is not None:
+                attention = (spatial_mask / spatial_mask.sum((-2, -1), keepdim=True)).expand(features.shape[0], -1, -1, -1)
         prediction = self.regressor(torch.cat(pooled, dim=1)).squeeze(-1)
         if return_attention:
             return prediction, attention.squeeze(1)
@@ -223,20 +241,29 @@ class EarthformerRegressor(nn.Module):
         x = x.permute(0, 1, 3, 4, 2).contiguous()
         forecast = self.backbone(x)
         response_map = forecast[:, 0].permute(0, 3, 1, 2).contiguous()
-        # Do not let zero-padding influence the scalar pooling head.  The
-        # attention map is cropped below as well, but cropping only after the
-        # head would still make the prediction depend on padded pixels.
-        if pad:
-            response_map = response_map[
-                :, :, left : left + self.original_size, left : left + self.original_size
-            ]
         result = self.head(response_map, return_attention=return_attention)
         if not return_attention:
             return result
         prediction, attention = result
         if pad:
+            attention = attention[:, left : left + self.original_size, left : left + self.original_size]
             attention = attention / attention.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
         return prediction, attention
+
+
+def _make_simvp(vendor_root: Path, padded_size: int, model_type: str):
+    repo = vendor_root / "external_models" / "SimVP"
+    if not repo.is_dir():
+        raise FileNotFoundError(f"SimVP source not found at {repo}")
+    sys.path.insert(0, str(repo))
+    implementation = _load_module(
+        "vendor_simvp", repo / "openstl" / "models" / "simvp_model.py"
+    ).SimVP_Model
+    return implementation(
+        in_shape=(15, 4, padded_size, padded_size), hid_S=16, hid_T=64,
+        N_S=2, N_T=2, model_type=model_type, mlp_ratio=4.0,
+        drop=0.05, drop_path=0.05,
+    )
 
 
 class OpenSTLScalarRegressor(nn.Module):
@@ -256,30 +283,12 @@ class OpenSTLScalarRegressor(nn.Module):
         head_variant: str = "full",
     ):
         super().__init__()
-        repo = vendor_root / "external_models" / "OpenSTL"
-        if not repo.exists():
-            raise FileNotFoundError(
-                f"OpenSTL source not found at {repo}; clone it under vendor/external_models"
-            )
-        sys.path.insert(0, str(repo))
-        from openstl.models.simvp_model import SimVP_Model
-
         # OpenSTL's upsampling path mirrors a spatial downsampling stage and
         # therefore expects an even spatial size.  Pad 41x41 to 48x48, which
         # also keeps the adapter usable for other odd crop sizes.
         self.original_size = spatial_size
         self.padded_size = int(math.ceil(spatial_size / 8) * 8)
-        self.backbone = SimVP_Model(
-            in_shape=(15, 4, self.padded_size, self.padded_size),
-            hid_S=16,
-            hid_T=64,
-            N_S=2,
-            N_T=2,
-            model_type=model_type,
-            mlp_ratio=4.0,
-            drop=0.05,
-            drop_path=0.05,
-        )
+        self.backbone = _make_simvp(vendor_root, self.padded_size, model_type)
         self.head = MultiScaleAttentionRegressionHead(4, head_variant)
 
     def forward(
@@ -301,201 +310,58 @@ class OpenSTLScalarRegressor(nn.Module):
         return self.head(features, return_attention=return_attention)
 
 
-class FourCastLSTMRegressor(nn.Module):
-    """Adapt the GitHub FourCastLSTM nowcaster to one CIKM rainfall value."""
+class SimVPFeatureRegressor(nn.Module):
+    """Regress rainfall from all translated feature steps, without an image decoder."""
 
-    def __init__(
-        self,
-        vendor_root: Path,
-        spatial_size: int,
-        head_variant: str = "full",
-    ):
+    def __init__(self, vendor_root: Path, spatial_size: int, head_variant: str = "full"):
         super().__init__()
-        repo = vendor_root / "external_models" / "Fourier-NowCasting-LSTM"
-        if not repo.exists():
-            raise FileNotFoundError(
-                f"FourCastLSTM source not found at {repo}; clone it under vendor/external_models"
-            )
-        # The upstream files import ``modules.*`` and depend on timm/einops.
-        # Keep those imports isolated to this adapter instead of copying the
-        # third-party implementation into the project package.
-        sys.path.insert(0, str(repo))
-        from FourCastLSTM import FourCastLSTM
-
-        # The upstream decoder requires an even patch grid.  A multiple of 8
-        # satisfies that constraint for patch_size=4 (41 -> 48).
         self.original_size = spatial_size
         self.padded_size = int(math.ceil(spatial_size / 8) * 8)
-        self.backbone = FourCastLSTM(
-            img_size=self.padded_size,
-            patch_size=4,
-            in_chans=4,
-            embed_dim=64,
-            depths=[2],
-        )
-        self.head = MultiScaleAttentionRegressionHead(4, head_variant)
+        backbone = _make_simvp(vendor_root, self.padded_size, "gSTA")
+        # Register only the modules used by scalar regression. The upstream
+        # decoder is discarded and has no parameters in this model/checkpoint.
+        self.encoder = backbone.enc
+        self.translator = backbone.hid
+        self.temporal_score = nn.Sequential(nn.LayerNorm(16), nn.Linear(16, 1, bias=False))
+        nn.init.normal_(self.temporal_score[-1].weight, std=0.02)
+        self.head = MultiScaleAttentionRegressionHead(16, head_variant)
 
-    def forward(
-        self, x: torch.Tensor, return_attention: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        pad = self.padded_size - x.shape[-1]
-        if pad:
-            left = pad // 2
-            right = pad - left
-            x = F.pad(x, (left, right, left, right))
-        states = [None]
-        output = None
-        for time_idx in range(x.shape[1]):
-            output, states = self.backbone(x[:, time_idx], states)
-        assert output is not None
-        if pad:
-            output = output[:, :, left : left + self.original_size, left : left + self.original_size]
-        return self.head(output, return_attention=return_attention)
+    def encode_sequence(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if x.ndim != 5 or tuple(x.shape[1:3]) != (15, 4) or x.shape[-2:] != (self.original_size, self.original_size):
+            raise ValueError(f"Expected [B,15,4,{self.original_size},{self.original_size}]")
+        batch, steps = x.shape[:2]
+        pad = self.padded_size - self.original_size
+        start = pad // 2
+        x = F.pad(x, (start, pad-start, start, pad-start))
+        encoded, _ = self.encoder(x.reshape(batch * steps, 4, self.padded_size, self.padded_size))
+        features = self.translator(encoded.reshape(batch, steps, *encoded.shape[1:]))
+        # Fractional coverage accounts for odd crops at the coarser feature
+        # resolution, excluding fully padded cells from every pooling step.
+        mask = features.new_zeros(1, 1, self.padded_size, self.padded_size)
+        mask[:, :, start:start+self.original_size, start:start+self.original_size] = 1
+        mask = F.adaptive_avg_pool2d(mask, features.shape[-2:])
+        return features, mask
 
+    def aggregate_temporal(self, features: torch.Tensor, mask: torch.Tensor):
+        descriptors = (features * mask.unsqueeze(1)).sum((-2, -1)) / mask.sum((-2, -1)).unsqueeze(1)
+        scores = self.temporal_score(descriptors).squeeze(-1)
+        weights = torch.softmax(scores.float(), dim=1).to(features.dtype)
+        fused = (features * weights[:, :, None, None, None]).sum(dim=1)
+        return fused, weights
 
-class CasCastDeterministicScalarRegressor(nn.Module):
-    """Use CasCast's deterministic EarthFormer core for the scalar target.
-
-    The full CasCast system is a SEVIR multi-stage diffusion pipeline.  It is
-    not a drop-in scalar regressor, so this adapter intentionally uses only
-    its deterministic forecasting core and adds a Tianchi regression head.
-    The four radar channels are projected to one precipitation channel before
-    entering the upstream core.
-    """
-
-    def __init__(
-        self,
-        vendor_root: Path,
-        spatial_size: int,
-        head_variant: str = "full",
-    ):
-        super().__init__()
-        repo = vendor_root / "external_models" / "CasCast"
-        if not repo.exists():
-            raise FileNotFoundError(
-                f"CasCast source not found at {repo}; clone it under vendor/external_models"
-            )
-        sys.path.insert(0, str(repo))
-        from networks.earthformer_xy import EarthFormer_xy
-
-        self.original_size = spatial_size
-        self.padded_size = int(math.ceil(spatial_size / 8) * 8)
-        self.channel_projection = nn.Conv2d(4, 1, kernel_size=1)
-        self.backbone = EarthFormer_xy(
-            in_len=15,
-            out_len=1,
-            height=self.padded_size,
-            width=self.padded_size,
-        )
-        self.head = MultiScaleAttentionRegressionHead(1, head_variant)
-
-    def forward(
-        self, x: torch.Tensor, return_attention: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        # The upstream CasCast EarthFormer contains attention and LayerNorm
-        # blocks which are noticeably less stable under CUDA autocast. Keep
-        # this adapter in FP32 even when the outer training loop uses AMP.
-        amp_guard = (
-            torch.autocast(device_type="cuda", enabled=False)
-            if x.device.type == "cuda"
-            else nullcontext()
-        )
-        with amp_guard:
-            x = x.float()
-            pad = self.padded_size - x.shape[-1]
-            if pad:
-                left = pad // 2
-                right = pad - left
-                x = F.pad(x, (left, right, left, right))
-            batch, steps, channels, height, width = x.shape
-            x = self.channel_projection(x.reshape(batch * steps, channels, height, width))
-            x = x.reshape(batch, steps, 1, height, width)
-            forecast = self.backbone(x)
-            if not torch.isfinite(forecast).all():
-                raise FloatingPointError(
-                    "CasCast EarthFormer produced NaN/Inf features; "
-                    "check input values and disable AMP for the CasCast run."
-                )
-            features = forecast[:, 0]
-            if pad:
-                features = features[
-                    :, :, left : left + self.original_size, left : left + self.original_size
-                ]
-            return self.head(features, return_attention=return_attention)
-
-
-class PostRainBenchScalarRegressor(nn.Module):
-    """Adapt the PostRainBench Swin-Unet backbone to Tianchi scalar labels.
-
-    PostRainBench expects a spatial NWP post-processing target.  This adapter
-    keeps its Swin backbone, summarizes the 15 radar frames into three temporal
-    groups (3 x 4 = 12 channels), and pools its regression map to one rainfall
-    value.  Its original classification objective is intentionally not used.
-    """
-
-    def __init__(
-        self,
-        vendor_root: Path,
-        spatial_size: int,
-        head_variant: str = "full",
-    ):
-        super().__init__()
-        repo = vendor_root / "external_models" / "PostRainBench" / "1_Korea"
-        if not repo.exists():
-            raise FileNotFoundError(
-                f"PostRainBench source not found at {repo}; clone it under vendor/external_models"
-            )
-        sys.path.insert(0, str(repo))
-        from model.swin_transformer_unet_skip_expand_decoder_sys import (
-            SwinTransformerSys_Two,
-        )
-
-        self.original_size = spatial_size
-        self.backbone_size = 64
-        self.backbone = SwinTransformerSys_Two(
-            img_size=self.backbone_size,
-            patch_size=4,
-            in_chans=12,
-            num_classes=3,
-            embed_dim=96,
-            depths=[2, 2, 2, 2],
-            num_heads=[3, 6, 12, 24],
-            window_size=8,
-            mlp_ratio=4.0,
-            qkv_bias=True,
-            drop_rate=0.0,
-            drop_path_rate=0.0,
-            ape=False,
-            patch_norm=True,
-            use_checkpoint=False,
-        )
-        self.head = MultiScaleAttentionRegressionHead(1, head_variant)
-
-    def forward(
-        self, x: torch.Tensor, return_attention: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        batch, steps, channels, height, width = x.shape
-        if steps % 3 != 0 or channels != 4:
-            raise ValueError(
-                "PostRainBench adapter expects [B, 15, 4, H, W] input so it can "
-                "form three 4-channel temporal summaries"
-            )
-        # Preserve all 15 input frames while matching the upstream 12-channel
-        # Swin input convention: average five adjacent frames per group.
-        grouped = x.reshape(batch, 3, steps // 3, channels, height, width).mean(dim=2)
-        features = grouped.reshape(batch, 3 * channels, height, width)
-        pad_h = self.backbone_size - height
-        pad_w = self.backbone_size - width
-        if pad_h < 0 or pad_w < 0:
-            raise ValueError("PostRainBench adapter only supports spatial sizes up to 64")
-        top, bottom = pad_h // 2, pad_h - pad_h // 2
-        left, right = pad_w // 2, pad_w - pad_w // 2
-        features = F.pad(features, (left, right, top, bottom))
-        _, regression_map = self.backbone(features)
-        regression_map = regression_map[
-            :, :, top : top + height, left : left + width
-        ]
-        return self.head(regression_map, return_attention=return_attention)
+    def forward(self, x: torch.Tensor, return_attention: bool = False):
+        sequence, mask = self.encode_sequence(x)
+        fused, _ = self.aggregate_temporal(sequence, mask)
+        result = self.head(fused, return_attention=return_attention, spatial_mask=mask)
+        if not return_attention:
+            return result
+        prediction, attention = result
+        attention = F.interpolate(attention[:, None], size=(self.padded_size, self.padded_size),
+                                  mode="bilinear", align_corners=False)[:, 0]
+        start = (self.padded_size - self.original_size) // 2
+        attention = attention[:, start:start+self.original_size, start:start+self.original_size]
+        attention = attention / attention.sum((-2, -1), keepdim=True).clamp_min(1e-8)
+        return prediction, attention
 
 
 def build_model(
@@ -520,18 +386,6 @@ def build_model(
         )
     if name == "simvp":
         return OpenSTLScalarRegressor(vendor_root, spatial_size, "gSTA", head_variant)
-    if name == "tau":
-        return OpenSTLScalarRegressor(vendor_root, spatial_size, "tau", head_variant)
-    if name == "fourcastlstm":
-        return FourCastLSTMRegressor(vendor_root, spatial_size, head_variant)
-    if name == "cascast":
-        return CasCastDeterministicScalarRegressor(vendor_root, spatial_size, head_variant)
-    if name == "postrainbench":
-        return PostRainBenchScalarRegressor(vendor_root, spatial_size, head_variant)
-    if name in {"blockgpt", "pfst_lstm"}:
-        raise RuntimeError(
-            f"{name} cannot be used as a direct Tianchi scalar model yet: "
-            "it requires its original tokenizer/configuration or a substantial "
-            "device-agnostic rewrite. Use cascast/postrainbench/fourcastlstm instead."
-        )
+    if name == "simvp_scalar":
+        return SimVPFeatureRegressor(vendor_root, spatial_size, head_variant)
     raise ValueError(f"Unknown model: {name}")
