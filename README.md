@@ -4,8 +4,6 @@
 
 > **2026-10-17 统一版**：所有程序直接使用标准文件名，例如 `train.py`、`ensemble.py`；这些文件包含实际实现。项目只保留一套代码，融合支持三个或四个模型。文件职责见 [PROJECT_FILES.md](PROJECT_FILES.md)，服务器迁移见 [统一部署说明.md](统一部署说明.md)。
 
-> 修改版：本目录是在 Intelligent-Meteorology 原项目基础上的本地适配与改进版本，不是原始仓库的原样副本。
-
 # 天池 CIKM2017 降水预测统一框架
 接入四类公开模型实现：
 
@@ -270,11 +268,3 @@ python validate_submission.py --prediction-file "#TODO" --answer-sample "#TODO"
 数据审计结果保存在 `examples/data-audit-current/`，可执行 Notebook 位于 `notebooks/data_quality_audit.ipynb`。外部小型数据集的取舍见 `DATASET_DECISION.md`。
 
 公开仓库及本次验证所用提交记录在 `VENDOR_COMMITS.md` 中。第三方代码继续遵循各自仓库许可证，本项目的适配代码不会删除或改写其许可证。
-
-## 7. GitHub 发布说明
-
-- 数据集、训练权重、缓存和第三方源码均被 `.gitignore` 排除，不要上传 CIKM2017 原始文件；
-- `scripts/bootstrap_vendor.sh` 会检出并核验 `VENDOR_COMMITS.md` 中记录的固定提交；
-- GitHub Actions 会执行编译检查、Shell语法检查和核心单元测试；
-- `examples/` 中的结果均为 smoke test，只证明代码通路可运行；
-- 根目录已有项目级 MIT License；第三方 vendor 代码仍按各自许可证管理。
