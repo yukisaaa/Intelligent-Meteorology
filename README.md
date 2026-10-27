@@ -1,9 +1,3 @@
-> 新增物理 80%/20% 数据划分脚本：见 [两部分数据划分与融合评估.md](两部分数据划分与融合评估.md)。最终评估文件通过 `--holdout-file` 使用。
-
-> 新增 `simvp_scalar`：从全部时序特征直接回归降水量，保留 `simvp` 作基线。训练与四组对照见 [SimVP单值回归适配说明.md](SimVP单值回归适配说明.md)。
-
-> **2026-10-17 统一版**：所有程序直接使用标准文件名，例如 `train.py`、`ensemble.py`；这些文件包含实际实现。项目只保留一套代码，融合支持三个或四个模型。文件职责见 [PROJECT_FILES.md](PROJECT_FILES.md)，服务器迁移见 [统一部署说明.md](统一部署说明.md)。
-
 # 天池 CIKM2017 降水预测统一框架
 接入四类公开模型实现：
 
@@ -20,8 +14,6 @@
 ```
 
 这里是针对 CIKM2017 单值标签的模型适配，不等同于原论文的未来雷达帧生成任务。
-
-论文依据、适配边界以及哪些方法没有照搬，见 `PAPER_BASIS.md`。
 
 当前版本加入了以下论文启发的改进：
 
@@ -206,8 +198,6 @@ python visualize_prediction.py \
 
 该图片展示历史雷达、历史最大回波和模型注意力区域。由于本数据集只有标量标签，注意力热力图不是未来降水空间预测图。
 
-`examples/attention-smoke.png` 是用 6 个样本、1 个 epoch 做通路测试得到的格式示例，只证明可视化程序可运行，不代表模型精度。
-
 预测 Test B 时显式指定：
 
 ```bash
@@ -265,6 +255,4 @@ python report_experiments.py "#TODO" "#TODO" "#TODO" --output-dir "#TODO"
 python validate_submission.py --prediction-file "#TODO" --answer-sample "#TODO"
 ```
 
-数据审计结果保存在 `examples/data-audit-current/`，可执行 Notebook 位于 `notebooks/data_quality_audit.ipynb`。外部小型数据集的取舍见 `DATASET_DECISION.md`。
-
-公开仓库及本次验证所用提交记录在 `VENDOR_COMMITS.md` 中。第三方代码继续遵循各自仓库许可证，本项目的适配代码不会删除或改写其许可证。
+第三方代码继续遵循各自仓库许可证，本项目的适配代码不会删除或改写其许可证。
