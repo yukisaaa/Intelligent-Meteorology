@@ -1,258 +1,97 @@
-# 天池 CIKM2017 降水预测统一框架
-接入四类公开模型实现：
+# 天池 CIKM2017 降水预测核心代码
 
-- ConvLSTM: `ndrplz/ConvLSTM_pytorch`
-- PredRNN: `thuml/predrnn-pytorch`
-- Earthformer: `amazon-science/earth-forecasting-transformer`
-- SimVP: OpenSTL，支持 `simvp` 和直接回归降水量的 `simvp_scalar`
-
-这些模型共享同一任务定义：
+这是一个面向 CIKM2017 雷达降水数据的单值回归项目。输入为 15 个时间步、4 个高度层的雷达序列，输出为一个非负降水量：
 
 ```text
-输入:  [B, 15, 4, H, W]
-输出:  [B]，非负降水值
+输入：[B, 15, 4, H, W]
+输出：[B]
 ```
 
-这里是针对 CIKM2017 单值标签的模型适配，不等同于原论文的未来雷达帧生成任务。
+项目支持 ConvLSTM、PredRNN、Earthformer、SimVP 和 `simvp_scalar`，并统一使用多尺度注意力回归头。仓库仅保留数据加载、训练、预测和模型融合所需的核心实现。
 
-当前版本加入了以下论文启发的改进：
+## 文件说明
 
-- 基于训练集 q90/q95 的强降水加权 SmoothL1；
-- 对降水欠预测增加非对称惩罚；
-- `1×3`、`3×1`、`3×3` 多尺度卷积；
-- 全局平均、全局最大和空间注意力池化；
-- q50/q75/q90/q95 下的 CSI、POD、FAR、强降水 MAE；
-- 根据共同验证集自动搜索多个模型的融合权重，支持四模型融合；
-- 标签分位数分层划分、逐样本划分清单和固定随机种子；
-- 零值、训练均值、训练中位数三种基线；
-- 早停、学习率自动衰减和可选 CUDA 混合精度；
-- 一键数据审计、消融实验、图表报告及提交文件校验。
+| 文件 | 作用 |
+|---|---|
+| `train.py` | 主训练入口。完成数据划分、模型训练、验证、留出集评估、早停、保存最佳权重，并可生成 TestA/TestB 预测。 |
+| `predict.py` | 加载 `best.pt` 权重，对指定 TXT 或 NPY 数据独立预测。 |
+| `ensemble.py` | 读取多个训练目录的预测结果，在验证集上搜索融合权重，并输出融合预测。 |
+| `src/tianchi_rainfall/__init__.py` | Python 包入口，导出常用的数据集与模型构建接口。 |
+| `src/tianchi_rainfall/data.py` | 读取 CIKM2017 TXT/NPY 数据，建立行索引，解析雷达序列并完成裁剪、清洗和归一化。 |
+| `src/tianchi_rainfall/models.py` | 定义统一回归头，以及 ConvLSTM、PredRNN、Earthformer、SimVP 的适配器。 |
+| `src/tianchi_rainfall/losses.py` | 定义 MSE、SmoothL1 和强降水加权损失。 |
+| `src/tianchi_rainfall/metrics.py` | 计算 MAE、RMSE、R²、Pearson 相关系数和强降水分类指标。 |
+| `src/tianchi_rainfall/splits.py` | 按降水量分位数生成可复现的训练集、验证集划分。 |
+| `src/tianchi_rainfall/training_data.py` | 组织训练、验证和独立留出数据集，检查样本是否重复。 |
+| `src/tianchi_rainfall/optimization.py` | 管理学习率预热、自动降学习率和早停。 |
+| `scripts/bootstrap_vendor.sh` | 下载并固定四类第三方模型源码的版本。 |
+| `requirements.txt` | Python 运行依赖。 |
+| `.gitignore` | 排除数据、权重、缓存和运行结果。 |
+| `LICENSE` | 项目许可证。 |
 
-## 1. 服务器环境与模型源码
+## 安装
+
+先安装与你的 CUDA 环境匹配的 PyTorch，再安装其余依赖并下载第三方模型源码：
 
 ```bash
+python3 -m pip install -r requirements.txt
 bash scripts/bootstrap_vendor.sh
-python -m pip install -r requirements.txt
 ```
 
-如源码已下载到其他目录，可以在训练时使用 `--vendor-root` 指定。
+如第三方源码已在其他位置，可通过 `--vendor-root` 指定。Earthformer 可能还需要按其上游项目说明安装额外依赖。
 
-服务器上先安装与你的 CUDA 版本匹配的 PyTorch，再安装本项目依赖。`bootstrap_vendor.sh` 只检出固定版本的第三方源码，不负责安装 Earthformer 的额外运行依赖；若 Earthformer 导入失败，按该 vendor 提交中的依赖说明补齐环境，不要让 pip 擅自替换服务器上的 CUDA PyTorch。
-
-先验证前向和反向传播：
+## 训练
 
 ```bash
-python smoke_test.py --vendor-root /path/to/vendor
-```
-
-这个 smoke test 会对每个模型检查输出形状、注意力归一化、非负输出和梯度有限性。若某个 vendor 依赖没装好，会在这里尽早暴露。
-
-## 2. 小样本训练验证
-
-```bash
-python train.py \
-  --model convlstm \
-  --train-file /data/CIKM2017_train/train.txt \
-  --test-file /data/CIKM2017_testB/testB.txt \
-  --vendor-root /path/to/vendor \
-  --output-dir /data/experiments/smoke-convlstm \
-  --max-samples 100 --epochs 1 --skip-test-prediction
-```
-
-先完成前一节的 `smoke_test.py`，再执行此小样本训练。
-
-完整数据审计：
-
-```bash
-python data_audit.py \
-  --train-file "#TODO" \
-  --test-a-file "#TODO" \
-  --test-b-file "#TODO" \
-  --answer-a "#TODO" \
-  --answer-b "#TODO" \
-  --output-dir "#TODO"
-```
-
-审计不会改写数据；检测到的负雷达哨兵和非有限值只会在加载到内存后被安全处理。
-
-## 服务器数据路径
-
-代码不写死本机路径。请将下面所有 `#TODO` 替换为服务器实际路径：
-
-```text
-#TODO/
-├── CIKM2017_train/train.txt
-├── CIKM2017_testA/testA.txt
-└── CIKM2017_testB/testB.txt
-```
-
-## 3. 训练
-
-ConvLSTM：
-
-```bash
-python train.py \
-  --model convlstm \
-  --train-file "#TODO" \
-  --test-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-dir "#TODO"
-```
-
-每次训练会将样本划分为训练集、早停/融合权重选择验证集，以及独立留出集（默认比例约 72%/18%/10%）。模型按验证 RMSE 选 checkpoint；融合权重在验证集选择，最终融合效果另报独立留出集指标。留出集不会用于早停、选权重或训练。
-
-若主要目标是比赛 RMSE，建议把默认强降水加权损失和普通 MSE 对照：
-
-```bash
-python train.py \
+python3 train.py \
   --model convlstm \
   --train-file /data/CIKM2017_train/train.txt \
   --test-file /data/CIKM2017_testB/testB.txt \
   --test-a-file /data/CIKM2017_testA/testA.txt \
-  --vendor-root /path/to/vendor \
-  --output-dir /data/experiments/convlstm-mse \
-  --loss mse
+  --vendor-root ./vendor \
+  --output-dir /data/experiments/convlstm \
+  --amp
 ```
 
-TestA 和 TestB 都可以预测：训练时用 `--test-file` 传 TestB，并用 `--test-a-file` 传 TestA；正式实验脚本会输出两个测试集的预测。测试标签为 -1，仍不可用于本地精度评估。
+`--model` 可选：`convlstm`、`predrnn`、`earthformer`、`simvp`、`simvp_scalar`。
 
-默认采用标签分位数分层。`--split-seed` 默认固定为 42，与模型初始化用的 `--seed` 分离，因此多随机种子实验仍使用完全相同的训练/验证/留出样本。训练目录会生成 `split_manifest.csv`、`baselines.json` 和 `holdout_baselines.json`。输出目录非空时训练会停止，避免覆盖旧结果；请每次使用新目录。CUDA服务器建议加 `--amp`。
+训练数据默认划分为训练集、验证集和独立留出集。模型按验证 RMSE 保存最佳权重，留出集不参与早停或融合权重选择。
 
-PredRNN：
+常用参数：
+
+- `--crop-size 41`：中心裁剪尺寸，也可使用 101。
+- `--loss heavy_rain`：强降水加权损失，也可选 `mse` 或 `smooth_l1`。
+- `--max-samples 100 --epochs 1`：正式训练前的小样本通路检查。
+- `--device cuda`：指定设备；省略时自动选择 CUDA、MPS 或 CPU。
+- `--amp`：在 CUDA 上启用混合精度。
+
+主要输出：
+
+- `best.pt`：最佳模型权重与训练配置。
+- `metrics.jsonl`：每轮训练和验证指标。
+- `validation_predictions.csv`：验证集预测，用于融合权重搜索。
+- `holdout_metrics.json`、`holdout_predictions.csv`：独立留出评估。
+- `test_predictions.csv`、`testA_predictions.csv`：测试集预测。
+- `split_manifest.csv`：数据划分明细。
+
+## 独立预测
 
 ```bash
-python train.py \
-  --model predrnn \
-  --train-file "#TODO" \
-  --test-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-dir "#TODO"
+python3 predict.py \
+  --checkpoint /data/experiments/convlstm/best.pt \
+  --data-file /data/CIKM2017_testB/testB.txt \
+  --vendor-root ./vendor \
+  --output-file /data/predictions/testB.csv
 ```
 
-Earthformer：
+## 模型融合
 
 ```bash
-python train.py \
-  --model earthformer \
-  --train-file "#TODO" \
-  --test-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-dir "#TODO" \
-  --batch-size 1
+python3 ensemble.py \
+  /data/experiments/convlstm \
+  /data/experiments/predrnn \
+  /data/experiments/earthformer \
+  --output-dir /data/experiments/ensemble
 ```
 
-正式服务器训练建议先使用 `--max-samples 100 --epochs 1` 验证，再去掉 `--max-samples`。
-
-## 4. 输出
-
-每个运行目录包含：
-
-- `config.json`: 完整运行配置
-- `metrics.jsonl`: 每轮训练与验证指标
-- `best.pt`: 验证集 RMSE 最优权重
-- `validation_predictions.csv`: 最优轮次的验证集预测，用于模型融合
-- `holdout_metrics.json` / `holdout_predictions.csv`: 独立留出集最终评估，不参与早停和模型融合权重选择
-- `test_predictions.csv`: 与 `--test-file`（通常 TestB）行顺序一致的单列预测
-- `testA_predictions.csv`: 可选的 TestA 单列预测
-- `split_manifest.csv`: 每条训练样本对应的训练/验证划分
-- `baselines.json` / `holdout_baselines.json`: 零值、训练均值和训练中位数基线
-
-升级后的多尺度注意力回归头改变了参数名称和维度，旧版 `best.pt` 不能直接加载，需重新训练。
-
-默认中心裁剪为 `41×41`，只保留 101×101 雷达图约 16.5% 的像素区域。应先以 `--crop-size 41` 和 `--crop-size 101` 各跑小样本对照，并比较验证/留出 RMSE、显存和耗时，再决定正式配置。完整实验脚本和服务器脚本均可通过 `CROP_SIZE=101` 设置尺寸；Earthformer 的输入会补齐到其网络要求的空间大小。
-
-## 5. 独立预测与比较
-
-```bash
-python predict.py \
-  --checkpoint "#TODO" \
-  --data-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-file "#TODO"
-
-python compare_runs.py "#TODO" "#TODO" "#TODO" --output "#TODO"
-```
-
-融合四个模型（也可以只传三个目录）：
-
-```bash
-python ensemble.py "#TODO" "#TODO" "#TODO" "#TODO" --output-dir "#TODO"
-```
-
-前四个 `#TODO` 分别填写 ConvLSTM、PredRNN、Earthformer、SimVP（或 simvp_scalar）的运行目录。最后一个为新的融合输出目录。所有运行必须使用相同的验证和留出样本及顺序。输出包含：
-
-- `ensemble.json`: 验证集选择的各模型权重、验证集选择指标和独立留出集最终指标；
-- `validation_predictions.csv` / `holdout_predictions.csv`: 融合后的验证集及留出集逐样本预测；
-- `test_predictions.csv`: 融合后的测试集降水预测。
-- `testA_predictions.csv`: 所有模型都提供 TestA 预测时生成的 TestA 融合结果。
-
-生成样本解释图：
-
-```bash
-python visualize_prediction.py \
-  --checkpoint "#TODO" \
-  --data-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-file "#TODO"
-```
-
-该图片展示历史雷达、历史最大回波和模型注意力区域。由于本数据集只有标量标签，注意力热力图不是未来降水空间预测图。
-
-预测 Test B 时显式指定：
-
-```bash
-python predict.py \
-  --checkpoint "#TODO" \
-  --data-file "#TODO" \
-  --vendor-root "#TODO" \
-  --output-file "#TODO"
-```
-
-也可以直接使用单模型服务器脚本。路径可以通过环境变量指定，输出会自动放入带运行时间戳的新目录，避免覆盖旧实验：
-
-```bash
-TRAIN_FILE=/data/CIKM2017_train/train.txt \
-TEST_A_FILE=/data/CIKM2017_testA/testA.txt \
-TEST_B_FILE=/data/CIKM2017_testB/testB.txt \
-VENDOR_ROOT=/path/to/vendor OUTPUT_ROOT=/data/experiments \
-CROP_SIZE=41 bash scripts/train_server.sh predrnn
-```
-
-## 6. 一键正式实验
-
-完整实验脚本也接受环境变量路径，并按时间戳创建独立输出目录：
-
-```bash
-export TRAIN_FILE=/data/CIKM2017_train/train.txt
-export TEST_A_FILE=/data/CIKM2017_testA/testA.txt
-export TEST_B_FILE=/data/CIKM2017_testB/testB.txt
-export ANSWER_A=/data/CIKM2017_testA/answer_sample.csv
-export ANSWER_B=/data/CIKM2017_testB/answer_sample.csv
-export VENDOR_ROOT=/path/to/vendor
-export OUTPUT_ROOT=/data/experiments
-export CROP_SIZE=41
-
-# 三个主模型、融合、图表、风险分级和 A/B 提交格式校验
-bash scripts/run_full_experiment.sh core cuda
-
-# 可选：增加多随机种子及 MSE/SmoothL1/强降水损失和结构消融
-bash scripts/run_full_experiment.sh paper cuda
-```
-
-`paper` 模式会自动运行：
-
-- ConvLSTM、PredRNN、Earthformer 主实验；
-- ConvLSTM 三个随机种子；
-- MSE、SmoothL1 与强降水损失对比；
-- 去注意力、去多尺度、仅平均池化消融；
-- 自动生成学习曲线、误差柱状图、真实值—预测值散点图；
-- 三模型融合、2000行提交格式校验和数据集相对风险分级。
-
-实验报告也可以单独生成：
-
-```bash
-python report_experiments.py "#TODO" "#TODO" "#TODO" --output-dir "#TODO"
-python validate_submission.py --prediction-file "#TODO" --answer-sample "#TODO"
-```
-
-第三方代码继续遵循各自仓库许可证，本项目的适配代码不会删除或改写其许可证。
+参与融合的训练目录必须使用相同的数据划分和样本顺序。
